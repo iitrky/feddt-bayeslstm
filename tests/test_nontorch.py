@@ -54,7 +54,7 @@ def uplink_bytes(P, rho, bits, n_tensor, rff_dim, drift=True):
 assert uplink_bytes(55762,0.1,8,14,128) == 17303 and uplink_bytes(55762,1,32,14,128,False) == 223048
 print("ALL NON-TORCH CHECKS PASSED")
 
-# ---- Algorithm 2: calibrated risk shift planner
+# ---- Algorithm 3: calibrated risk shift planner
 from feddt.twin import shift_planner, decision_quality
 rng2 = np.random.default_rng(1)
 veh = [
@@ -73,4 +73,44 @@ assert any(a.startswith("retire_pack_route_second_life") for a in acts["TRK-1"])
 assert "fast_charge_allowed" in acts["LHD-1"]
 dq = decision_quality([{"true": 50, "p_le_h": 0.9}, {"true": 500, "p_le_h": 0.0}, {"true": 80, "p_le_h": 0.0}], 100)
 assert abs(dq["missed_failure_rate"] - 0.5) < 1e-9 and dq["false_withdrawal_rate"] == 0.0
-print("ALGORITHM 2 CHECKS PASSED")
+print("ALGORITHM 3 (SHIFT PLANNER) CHECKS PASSED")
+
+# ---- physics-guided prior: recover Ea from cells at different temperatures
+from feddt import physics
+from feddt.features import N_HI as _NHI
+def synth_phys_cell(T_c, B=np.exp(7.5), Ea=31700.0, z=0.55, n=300, c=1.0, seed=0):
+    r_ = np.random.default_rng(seed)
+    soh = np.empty(n); soh[0] = 1.0; ah = 0.0; Tk = T_c + 273.15
+    k = B * np.exp(-(Ea - 370.3 * c) / (8.314 * Tk))
+    for i in range(1, n):
+        ah += soh[i - 1] * 2.0
+        soh[i] = 1.0 * (1 - k * ah ** z)
+    his = np.full((n, _NHI), np.nan); his[:, 7] = T_c; his[:, 11] = c
+    return CellRecord(f"T{T_c}", "SYN", "NMC", 2.0, 0.8, np.arange(n), soh + r_.normal(0, 2e-4, n), his)
+cells = [synth_phys_cell(T, seed=i) for i, T in enumerate([25, 25, 40, 45, 45])]
+fits = [physics.fit_local(cc) for cc in cells]
+agg = physics.aggregate(fits)
+print("physics prior: Ea_hat =", round(agg["Ea"]), "J/mol (true 31700), z =", round(agg["z"], 3), "(true 0.55)")
+assert agg["Ea_estimated"] and abs(agg["Ea"] - 31700) / 31700 < 0.15 and abs(agg["z"] - 0.55) < 0.08
+pr = physics.prior_series(cells[3], agg, 10)
+err = np.abs(pr - cells[3].soh[10:])
+print("one-step prior MAE on hot cell:", float(err.mean()))
+assert err.mean() < 2e-3
+print("PHYSICS PRIOR CHECKS PASSED")
+
+# ---- DW-FCC: weighted conformal improves coverage under shift
+from feddt.conformal import rff, tilt_eta, weighted_conformal_quantile
+rng3 = np.random.default_rng(3)
+xc = rng3.normal(0, 1, (2000, 1)); xt = rng3.normal(1.5, 1, (2000, 1))
+sd = lambda x: 0.1 + 0.15 * np.abs(x[:, 0])
+yc = xc[:, 0] + rng3.normal(0, 1, 2000) * sd(xc); yt = xt[:, 0] + rng3.normal(0, 1, 2000) * sd(xt)
+sc = np.abs(yc - xc[:, 0]) / 0.2
+Pc, Pt = rff(xc, 128, 1.0, 7), rff(xt, 128, 1.0, 7)
+d = Pt.mean(0) - Pc.mean(0); proj = Pc @ d; tgt = Pt.mean(0) @ d
+eta = tilt_eta(proj, tgt); w = np.exp(eta * (proj - proj.max()))
+qw = weighted_conformal_quantile(sc, w, float(np.exp(eta * (tgt - proj.max()))))
+qu = np.quantile(sc, 0.95)
+cu = np.mean(np.abs(yt - xt[:, 0]) <= qu * 0.2); cw = np.mean(np.abs(yt - xt[:, 0]) <= qw * 0.2)
+print(f"DW-FCC coverage under shift: split {cu:.3f}, weighted {cw:.3f}")
+assert cw > cu + 0.04
+print("DW-FCC CHECKS PASSED")

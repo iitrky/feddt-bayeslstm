@@ -59,7 +59,7 @@ def main():
             for m, gm in df.groupby("method"):
                 hc = float(gm["horizon_cycles"].iloc[0])
                 out.append({"method": m, **decision_quality(gm.to_dict("records"), hc)})
-            print(f"\n### {f}: Algorithm 2 decision quality (Table 9)\n")
+            print(f"\n### {f}: Algorithm 3 decision quality (Table 7)\n")
             print(pd.DataFrame(out).round(3).to_markdown(index=False))
     for f in sorted(glob.glob(f"{a.results}/comm_*.csv")):
         df = pd.read_csv(f)

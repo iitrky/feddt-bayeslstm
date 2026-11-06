@@ -58,7 +58,8 @@ def load_nasa(path_mat: str, rated_ah: float = 2.0, chemistry: str = "NASA-18650
             caps.append(cap)
             his.append(extract_cycle_features(last_charge, dis, rated_ah))
     caps = np.asarray(caps)
-    return CellRecord(name, "NASA", chemistry, rated_ah, eol, np.arange(len(caps)), caps / rated_ah, np.vstack(his)).clean()
+    return CellRecord(name, "NASA", chemistry, rated_ah, eol, np.arange(len(caps)), caps / rated_ah, np.vstack(his),
+                      meta={"ambient_c": 24.0}).clean()
 
 
 # ---------------------------------------------------------------- CALCE CS2
@@ -100,7 +101,8 @@ def load_calce_cs2(cell_dir: str, rated_ah: float = 1.1, chemistry: str = "LCO",
         his.append(f)
     caps = np.asarray(caps)
     cid = os.path.basename(os.path.normpath(cell_dir))
-    return CellRecord(cid, "CALCE", chemistry, rated_ah, eol, np.arange(len(caps)), caps / rated_ah, np.vstack(his)).clean()
+    return CellRecord(cid, "CALCE", chemistry, rated_ah, eol, np.arange(len(caps)), caps / rated_ah, np.vstack(his),
+                      meta={"ambient_c": 25.0}).clean()
 
 
 # ---------------------------------------------------------------- Oxford
@@ -130,12 +132,13 @@ def load_oxford(path_mat: str, rated_ah: float = 0.74, chemistry: str = "LCO-NCO
             _ = rated_ma
         caps = np.asarray(caps)
         out.append(CellRecord(cell, "Oxford", chemistry, rated_ah, eol, np.asarray(cyc), caps / rated_ah,
-                              np.vstack(his), meta={"block": 100}).clean())
+                              np.vstack(his), meta={"block": 100, "ambient_c": 40.0}).clean())
     return out
 
 
 # ---------------------------------------------------------------- in-house CSV
-def load_inhouse_csv(path_csv: str, rated_ah: float, chemistry: str, eol: float = 0.80) -> list[CellRecord]:
+def load_inhouse_csv(path_csv: str, rated_ah: float, chemistry: str, eol: float = 0.80,
+                     ambient_c: float = 25.0) -> list[CellRecord]:
     """Columns: cell_id, cycle, step_type (charge|discharge|rest), time_s, voltage_V, current_A, temp_C.
     Optional column capacity_Ah (per-row, max over the discharge step is used)."""
     df = pd.read_csv(path_csv)
@@ -159,7 +162,7 @@ def load_inhouse_csv(path_csv: str, rated_ah: float, chemistry: str, eol: float 
             his.append(extract_cycle_features(seg["charge"], seg["discharge"], rated_ah))
             cyc.append(int(n))
         out.append(CellRecord(str(cid), "InHouse", chemistry, rated_ah, eol, np.asarray(cyc),
-                              np.asarray(caps) / rated_ah, np.vstack(his)).clean())
+                              np.asarray(caps) / rated_ah, np.vstack(his), meta={"ambient_c": ambient_c}).clean())
     return out
 
 

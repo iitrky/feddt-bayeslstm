@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+from . import physics
+from .conformal import tilt_eta
 from .data import CellRecord, make_windows
 from .model import BayesLSTM, gaussian_nll, is_backbone, is_head
 
@@ -41,6 +43,8 @@ class FedConfig:
     conformal_a: float = 0.05
     seed: int = 0
     eval_every: int = 5
+    use_physics: bool = True       # physics-guided prior, residual learning (Sect. 4.2)
+    dwfcc: bool = True             # drift-weighted federated conformal calibration (Algorithm 2)
 
     @staticmethod
     def preset(method: str, **kw):
@@ -48,6 +52,7 @@ class FedConfig:
         if method in ("fedavg", "fedprox", "scaffold"):
             c.beta, c.use_drift, c.use_reliability, c.chem_heads = 1.0, False, False, False
             c.topk, c.qbits, c.alpha_floor = 1.0, 32, 0.0
+            c.use_physics, c.dwfcc = False, False
             c.mu_prox = 0.01 if method == "fedprox" else 0.0
         for k, v in kw.items():
             setattr(c, k, v)
@@ -110,6 +115,10 @@ class RFF:
         g = np.random.default_rng(seed)
         self.W = torch.tensor(g.normal(0, 1.0 / bandwidth, (d_in, D // 2)), dtype=torch.float32)
 
+    def features(self, H):
+        Z = H @ self.W
+        return torch.cat([torch.cos(Z), torch.sin(Z)], 1) / math.sqrt(self.W.shape[1])
+
     def mean_embed(self, H):
         Z = H @ self.W
         phi = torch.cat([torch.cos(Z), torch.sin(Z)], 1) / math.sqrt(self.W.shape[1])
@@ -151,13 +160,24 @@ class Client:
     personal: dict = None
     drift_hist: list = field(default_factory=list)
     join_round: int = 0            # scenario S3: late-joining chemistry
+    ptr: np.ndarray = None         # physics prior for each target (train / cal / val)
+    pcal: np.ndarray = None
+    pval: np.ndarray = None
+    n_train_cycles: int = 0
 
     @staticmethod
     def from_record(rec: CellRecord, L: int, chem_key: str):
         X, mask, y = make_windows(rec, L)
         n = len(y)
         a, b = int(0.8 * n), int(0.9 * n)
-        return Client(rec, chem_key, X[:a], y[:a], X[a:b], y[a:b], X[b:], y[b:], mask)
+        c = Client(rec, chem_key, X[:a], y[:a], X[a:b], y[a:b], X[b:], y[b:], mask)
+        c.ptr, c.pcal, c.pval = np.zeros_like(c.ytr), np.zeros_like(c.ycal), np.zeros_like(c.yval)
+        c.n_train_cycles = a + L
+        return c
+
+    def set_prior(self, prior):
+        a, b = len(self.ytr), len(self.ytr) + len(self.ycal)
+        self.ptr, self.pcal, self.pval = prior[:a], prior[a:b], prior[b:]
 
     def tensors(self, X, norm):
         mu, sd = norm[self.chem]
@@ -205,6 +225,15 @@ class Federation:
         self.gen = torch.Generator().manual_seed(cfg.seed)
         self.rng = np.random.default_rng(cfg.seed)
         self.norm = federated_norm(clients)
+        # federated physics prior: local fits on training cycles -> per-chemistry pooling
+        self.phys = {}
+        if cfg.use_physics:
+            fits = {}
+            for c in clients:
+                fits.setdefault(c.chem, []).append(physics.fit_local(c.rec, upto=c.n_train_cycles))
+            self.phys = {ch: physics.aggregate(f) for ch, f in fits.items()}
+            for c in clients:
+                c.set_prior(physics.prior_series(c.rec, self.phys[c.chem], cfg.window))
         self.model = BayesLSTM(n_in, cfg.hidden, 2, cfg.dropout)
         self.names = [n for n, _ in self.model.named_parameters()]
         self.bb_names = [n for n in self.names if is_backbone(n)]
@@ -264,7 +293,7 @@ class Federation:
         m = self.model_for(c.chem)
         self.set_mask(m, c)
         theta0 = flat(m, self.names)
-        X, y = c.tensors(c.Xtr, self.norm), torch.tensor(c.ytr)
+        X, y = c.tensors(c.Xtr, self.norm), torch.tensor(c.ytr - c.ptr)
         bb0 = flat(m, self.bb_names) if cfg.mu_prox > 0 else None
         sc = (self.c_global, c.c_local) if cfg.method == "scaffold" else None
         steps = train_local(m, X, y, cfg, cfg.local_epochs, self.gen, global_bb=bb0, scaffold=sc)
@@ -280,7 +309,7 @@ class Federation:
             m.eval()
             mu, ve, va = m.predict(c.tensors(c.Xval, self.norm), T=min(cfg.mc_T, 20))
             var = (ve + va).clamp_min(1e-10)
-            nll = float((0.5 * ((torch.tensor(c.yval) - mu) ** 2 / var + var.log() + math.log(2 * math.pi))).mean())
+            nll = float((0.5 * ((torch.tensor(c.yval - c.pval) - mu) ** 2 / var + var.log() + math.log(2 * math.pi))).mean())
             r = math.exp(-nll / cfg.tau_r) if nll > -50 else 1.0
         # drift: RFF mean embedding of recent windows vs cluster reference
         d, phi = 0.0, None
@@ -347,7 +376,7 @@ class Federation:
             for i in info:
                 if med > 0 and i["d"] > 1.5 * med and cfg.personal_epochs > 0:
                     c, m = i["client"], i["model"]
-                    train_local(m, c.tensors(c.Xtr, self.norm), torch.tensor(c.ytr), cfg, cfg.personal_epochs,
+                    train_local(m, c.tensors(c.Xtr, self.norm), torch.tensor(c.ytr - c.ptr), cfg, cfg.personal_epochs,
                                 self.gen, head_only=True)
                     c.personal = {nm: p.detach().clone() for nm, p in m.named_parameters() if is_head(nm)}
 
@@ -371,24 +400,53 @@ class Federation:
         return torch.cat(idx)
 
     # ------------------------------------------------------------- conformal
-    def conformal_quantile(self, a=None, bins=4000, smax=40.0):
-        """Federated split-conformal: clients send score histograms, server takes quantile."""
+    def conformal_quantile(self, a=None, target_phi=None, bins=4000, smax=40.0, ess_min=0.2):
+        """Federated split conformal factor q_hat (Eq. 10). With DW-FCC (Algorithm 2) and a target
+        vehicle embedding `target_phi`, calibration scores are reweighted by an exponential tilt
+        of their RFF embeddings towards the target, so coverage tracks the target's conditions."""
         a = self.cfg.conformal_a if a is None else a
-        hist, m_tot = np.zeros(bins), 0
-        for c in self.clients:
+        scores, feats = [], []
+        for c in self.clients:                      # each vehicle computes on its own calibration set
             if not len(c.ycal):
                 continue
             m = self.model_for(c.chem)
             self.set_mask(m, c)
             m.eval()
-            mu, ve, va = m.predict(c.tensors(c.Xcal, self.norm), T=self.cfg.mc_T)
-            s = (np.abs(c.ycal - mu.numpy()) / np.sqrt((ve + va).numpy() + 1e-12))
-            h, _ = np.histogram(np.clip(s, 0, smax), bins=bins, range=(0, smax))
-            hist += h
-            m_tot += len(s)
-        if m_tot == 0:
+            Xc = c.tensors(c.Xcal, self.norm)
+            mu, ve, va = m.predict(Xc, T=self.cfg.mc_T)
+            scores.append(np.abs((c.ycal - c.pcal) - mu.numpy()) / np.sqrt((ve + va).numpy() + 1e-12))
+            if target_phi is not None and self.cfg.dwfcc:
+                with torch.no_grad():
+                    feats.append(self.rff.features(m.embed(Xc)).numpy())
+        if not scores:
             return 1.96
-        level = min(math.ceil((m_tot + 1) * (1 - a)) / m_tot, 1.0)
-        cdf = np.cumsum(hist) / m_tot
-        j = int(np.searchsorted(cdf, level))
-        return (j + 1) * smax / bins
+        s_all = np.concatenate(scores)
+        m_tot = len(s_all)
+        if target_phi is None or not self.cfg.dwfcc:
+            hist, _ = np.histogram(np.clip(s_all, 0, smax), bins=bins, range=(0, smax))
+            level = min(math.ceil((m_tot + 1) * (1 - a)) / m_tot, 1.0)
+            j = int(np.searchsorted(np.cumsum(hist) / m_tot, level))
+            return (j + 1) * smax / bins
+        # Algorithm 2: secure sums of mean embedding, projections and weighted histograms
+        F = np.concatenate(feats)
+        mu_p = F.mean(0)
+        delta = np.asarray(target_phi, float) - mu_p
+        proj = F @ delta
+        target = float(np.asarray(target_phi, float) @ delta)
+        eta = tilt_eta(proj, target, ess_min=ess_min)
+        w = np.exp(eta * (proj - proj.max()))
+        w_test = float(np.exp(eta * (target - proj.max())))
+        hist, edges = np.histogram(np.clip(s_all, 0, smax), bins=bins, range=(0, smax), weights=w)
+        cdf = np.cumsum(hist) / (hist.sum() + w_test)
+        j = int(np.searchsorted(cdf, 1 - a))
+        self.log.setdefault("dwfcc", []).append({"eta": eta, "ess_frac": float(w.sum() ** 2 / (w ** 2).sum() / m_tot)})
+        return float(edges[j + 1]) if j < bins else smax
+
+    def target_embedding(self, chem, X_norm, mask=None):
+        """Mean RFF embedding of a target vehicle's observed windows (sent under secure aggregation)."""
+        m = self.model_for(chem)
+        if mask is not None:
+            m.in_mask.copy_(torch.tensor(mask, dtype=torch.float32))
+        m.eval()
+        with torch.no_grad():
+            return self.rff.features(m.embed(X_norm)).mean(0).numpy()

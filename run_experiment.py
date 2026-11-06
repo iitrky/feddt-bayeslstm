@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from feddt import physics
 from feddt.data import load_calce_cs2, load_inhouse_csv, load_nasa, load_oxford, make_windows
 from feddt.fed import Client, FedConfig, Federation, train_local
 from feddt.features import N_HI
@@ -32,7 +33,7 @@ from feddt.model import BayesLSTM, count_params
 from feddt.twin import eol_index, rollout_rul, rul_metrics, soh_metrics
 
 START_FRACS = (0.3, 0.5, 0.7)
-HORIZON_CYCLES = 100  # decision horizon for Algorithm 2 evaluation (e.g. 3 shifts x ~33 cycles)
+HORIZON_CYCLES = 100  # decision horizon for Algorithm 3 evaluation (e.g. 3 shifts x ~33 cycles)
 N_IN = 1 + N_HI
 
 
@@ -46,7 +47,7 @@ def load_all(cfg):
         recs.extend(load_oxford(cfg["oxford"]))
     if cfg.get("inhouse"):
         ih = cfg["inhouse"]
-        recs.extend(load_inhouse_csv(ih["csv"], ih["rated_ah"], ih["chemistry"], ih.get("eol", 0.8)))
+        recs.extend(load_inhouse_csv(ih["csv"], ih["rated_ah"], ih["chemistry"], ih.get("eol", 0.8), ih.get("ambient_c", 25.0)))
     return recs
 
 
@@ -76,12 +77,14 @@ def norm_fn_for(fed, chem):
     return lambda W: (W - mu_t) / sd_t
 
 
-def evaluate_test_cell(model, rec, mask, norm, L, T, q, rul_q=None, M=200, seed=0, do_rul=True):
+def evaluate_test_cell(model, rec, mask, norm, L, T, q, rul_q=None, M=200, seed=0, do_rul=True, phys=None):
     X, _, y = make_windows(rec, L)
     cut = int(0.3 * len(y))
     model.in_mask.copy_(torch.tensor(mask, dtype=torch.float32))
     model.eval()
     mu, ve, va = model.predict(norm(torch.tensor(X[cut:])), T=T)
+    if phys is not None:  # physics prior + learned residual
+        mu = mu + torch.tensor(physics.prior_series(rec, phys, L)[cut:])
     sig = (ve + va).sqrt().numpy()
     soh = soh_metrics(y[cut:], mu.numpy(), sig, q=q)
     soh["epi_share"] = float((ve / (ve + va + 1e-12)).mean())
@@ -93,7 +96,8 @@ def evaluate_test_cell(model, rec, mask, norm, L, T, q, rul_q=None, M=200, seed=
             s = int(fr * eidx)
             if s < L:
                 continue
-            samples = rollout_rul(model, rec, s, L, norm, rec.eol, M=M, h_max=math.ceil(3000 / block), block=block, seed=seed)
+            samples = rollout_rul(model, rec, s, L, norm, rec.eol, M=M, h_max=math.ceil(3000 / block), block=block, seed=seed,
+                                  phys=phys)
             pred = float(np.median(samples))
             if rul_q is not None:
                 sd = float(np.std(samples)) + 1e-9
@@ -104,6 +108,12 @@ def evaluate_test_cell(model, rec, mask, norm, L, T, q, rul_q=None, M=200, seed=
             rows.append({"start_frac": fr, "true": (eidx - s) * block, "pred": pred, "lo": float(lo), "hi": float(hi),
                          "p_le_h": float(np.mean(samples <= h_cyc)), "horizon_cycles": h_cyc})
     return soh, rows
+
+
+def phys_for(fed, rec):
+    if not fed.cfg.use_physics or not fed.phys:
+        return None
+    return fed.phys.get(rec.chemistry, next(iter(fed.phys.values())))
 
 
 def rul_conformal_q(fed, L, a=0.05, M=100):
@@ -122,7 +132,8 @@ def rul_conformal_q(fed, L, a=0.05, M=100):
             s = int(fr * eidx)
             if s < L:
                 continue
-            smp = rollout_rul(m, rec, s, L, nf, rec.eol, M=M, h_max=math.ceil(3000 / block), block=block)
+            smp = rollout_rul(m, rec, s, L, nf, rec.eol, M=M, h_max=math.ceil(3000 / block), block=block,
+                              phys=fed.phys.get(c.chem))
             scores.append(abs((eidx - s) * block - np.median(smp)) / (np.std(smp) + 1e-9))
     if not scores:
         return None
@@ -154,7 +165,7 @@ def run_fed(method, train_recs, test_recs, args, seed, scenario, ablation=None):
                 norm_fn_for(fed, r.chemistry)(torch.tensor(make_windows(r, cfg.window)[0][:50]))) if cfg.chem_heads else "shared")
             m = fed.model_for(key)
             s, _ = evaluate_test_cell(m, r, make_windows(r, cfg.window)[1], norm_fn_for(fed, r.chemistry), cfg.window,
-                                      T=min(cfg.mc_T, 10), q=1.96, do_rul=False)
+                                      T=min(cfg.mc_T, 10), q=1.96, do_rul=False, phys=phys_for(fed, r))
             vals.append(s["RMSE_%"])
         curve.append({"round": t, "rmse_%": float(np.mean(vals)),
                       "cum_uplink_MB": sum(fed.log["uplink_bytes"]) / 1e6,
@@ -163,14 +174,21 @@ def run_fed(method, train_recs, test_recs, args, seed, scenario, ablation=None):
     t0 = time.time()
     fed = Federation(clients, N_IN, cfg).run(eval_fn)
     train_s = time.time() - t0
-    q = fed.conformal_quantile() if method == "feddt" and not (ablation or {}).get("no_conformal") else 1.96
+    use_conf = method == "feddt" and not (ablation or {}).get("no_conformal")
+    q_global = fed.conformal_quantile() if use_conf else 1.96
     rq = rul_conformal_q(fed, cfg.window) if method == "feddt" and not (ablation or {}).get("no_conformal") else None
     soh_rows, rul_rows = [], []
     for r in test_recs:
         key = r.chemistry if (not cfg.chem_heads or r.chemistry in fed.heads) else "shared"
         m = fed.model_for(key)
-        s, rr = evaluate_test_cell(m, r, make_windows(r, cfg.window)[1], norm_fn_for(fed, r.chemistry), cfg.window,
-                                   T=cfg.mc_T, q=q, rul_q=rq, seed=seed)
+        Xr, mask_r, yr = make_windows(r, cfg.window)
+        q = q_global
+        if use_conf and cfg.dwfcc:  # Algorithm 2 (DW-FCC): weight calibration towards this vehicle's observed windows
+            phi = fed.target_embedding(key, norm_fn_for(fed, r.chemistry)(torch.tensor(Xr[:int(0.3 * len(yr))])), mask_r)
+            q = fed.conformal_quantile(target_phi=phi)
+        s, rr = evaluate_test_cell(m, r, mask_r, norm_fn_for(fed, r.chemistry), cfg.window,
+                                   T=cfg.mc_T, q=q, rul_q=rq, seed=seed, phys=phys_for(fed, r))
+        s["conformal_q"] = q
         soh_rows.append({"cell": r.cell_id, "dataset": r.dataset, **s})
         rul_rows += [{"cell": r.cell_id, "dataset": r.dataset, **x} for x in rr]
     bb, hd, nt = count_params(fed.model)
@@ -178,7 +196,7 @@ def run_fed(method, train_recs, test_recs, args, seed, scenario, ablation=None):
             "uplink_MB_per_round": float(np.mean(fed.log["uplink_bytes"])) / 1e6,
             "uplink_kB_per_client_round": float(np.mean(fed.log["uplink_bytes"])) / 1e3 / max(1, math.ceil(cfg.participation * len(clients))),
             "total_uplink_MB": sum(fed.log["uplink_bytes"]) / 1e6, "total_downlink_MB": sum(fed.log["downlink_bytes"]) / 1e6,
-            "train_s": train_s, "conformal_q": q}
+            "train_s": train_s, "conformal_q_global": q_global}
     return soh_rows, rul_rows, comm, curve, fed
 
 
@@ -251,6 +269,8 @@ ABLATIONS = {
     "shared_head": {"chem_heads": False},
     "no_conformal": {"no_conformal": True},
     "no_compression": {"topk": 1.0, "qbits": 32},
+    "no_physics": {"use_physics": False},
+    "no_dwfcc": {"dwfcc": False},
 }
 
 

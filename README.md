@@ -11,13 +11,16 @@ moving raw voltage, current or temperature data off the vehicles.
 | Component | Paper | Code |
 |---|---|---|
 | Edge feature extraction (12 health indicators) | Sect. 4.1 | `feddt/features.py` |
-| Variational Bayesian LSTM, heteroscedastic head | Sect. 4.2, Eqs. (3)–(4) | `feddt/model.py` |
-| Drift-aware weights from volume, NLL reliability, RFF-MMD drift | Sect. 4.3, Eqs. (5)–(6) | `feddt/fed.py` (`Federation.client_update`, `aggregate`) |
-| Chemistry clusters, cold start, top-k + 8-bit compression | Sect. 4.4, Eq. (7) | `Federation.heads`, `cold_start_key`, `compress`, `uplink_bytes` |
-| Split conformal calibration, MC RUL rollout | Sect. 4.5, Eq. (8) | `Federation.conformal_quantile`, `feddt/twin.py:rollout_rul` |
-| Algorithm 1: federated training | Sect. 4.6 | `Federation.run` |
-| Algorithm 2: calibrated risk shift planner | Sect. 4.6, Fig. 2 | `feddt/twin.py:shift_planner`, `decision_quality` |
-| Fig. 1 and Fig. 2 block diagrams | Sects. 3.2, 4.6 | `figures/make_figures.py` |
+| Physics-guided prior: federated Arrhenius throughput fade law, residual learning | Sect. 4.2, Eq. (3), Fig. 2 | `feddt/physics.py` |
+| Variational Bayesian LSTM, heteroscedastic head | Sect. 4.2, Eqs. (4)–(5) | `feddt/model.py` |
+| Drift-aware weights from volume, NLL reliability, RFF-MMD drift | Sect. 4.3, Eqs. (6)–(7) | `feddt/fed.py` (`Federation.client_update`, `aggregate`) |
+| Chemistry clusters, cold start, top-k + 8-bit compression | Sect. 4.4, Eq. (8) | `Federation.heads`, `cold_start_key`, `compress`, `uplink_bytes` |
+| Algorithm 1: federated training | Sect. 4.5 | `Federation.run` |
+| Algorithm 2: drift-weighted federated conformal calibration (DW-FCC) | Sect. 4.6, Eqs. (9)–(10), Fig. 3 | `feddt/conformal.py`, `Federation.conformal_quantile` |
+| Physics-guided MC RUL rollout | Sect. 4.6 | `feddt/twin.py:rollout_rul` |
+| Algorithm 3: calibrated risk shift planner | Sect. 4.7, Fig. 4 | `feddt/twin.py:shift_planner`, `decision_quality` |
+| Synthetic identifiability and coverage checks (Table 10) | Sect. 6.4 | `tests/test_nontorch.py`, `tests/synthetic_shift_check.py` |
+| Figs. 1–4 block diagrams | Sects. 3.2, 4.2, 4.6, 4.7 | `figures/make_figures.py` |
 
 ## Install
 
@@ -51,10 +54,12 @@ python run_experiment.py --config data_paths.json --seeds 0 --rounds 10 --T 10 -
 python run_experiment.py --config data_paths.json --scenario S1 --out results/
 # Table 9: drift scenarios and ablation
 python run_experiment.py --config data_paths.json --scenario S2 --methods feddt fedavg_mc \
-    --ablations no_drift no_reliability shared_head no_conformal --out results/
+    --ablations no_physics no_drift no_reliability shared_head no_dwfcc no_conformal --out results/
 python run_experiment.py --config data_paths.json --scenario S3 --late_chem <CHEMISTRY> \
     --methods feddt fedavg_mc --ablations no_drift shared_head --out results/
-# print every table, including Algorithm 2 decision quality
+# Table 10: synthetic covariate-shift check of DW-FCC (seconds, no data needed)
+python tests/synthetic_shift_check.py
+# print every table, including Algorithm 3 decision quality
 python make_tables.py --results results/ --target_rmse 2.0
 # figures
 python figures/make_figures.py
@@ -63,16 +68,16 @@ python figures/make_figures.py
 ## Tests
 
 ```bash
-python tests/test_nontorch.py    # features, windows, metrics, uplink bytes, Algorithm 2 (no PyTorch needed)
+python tests/test_nontorch.py    # features, windows, metrics, uplink bytes, physics prior, DW-FCC, shift planner (no PyTorch needed)
 ```
 
 ## Repository layout
 
 ```
-feddt/               package: features, data loaders, model, federation, digital twin
+feddt/               package: features, data loaders, physics prior, model, federation, conformal calibration, digital twin
 run_experiment.py    experiments of Sect. 5 -> CSV files
 make_tables.py       CSV files -> tables of Sect. 6
-figures/             Fig. 1 and Fig. 2 (script, EPS, TIFF, PNG)
+figures/             Figs. 1-4 (script, EPS, TIFF, PNG)
 tests/               unit tests that run without PyTorch
 ```
 

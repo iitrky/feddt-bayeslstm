@@ -52,12 +52,15 @@ def eol_index(soh, eol):
     return int(idx[0]) if len(idx) else None
 
 
-def rollout_rul(model, rec, start, L, norm_fn, eol, M=200, h_max=3000, block=1, seed=0):
+def rollout_rul(model, rec, start, L, norm_fn, eol, M=200, h_max=3000, block=1, seed=0, phys=None):
     """Monte Carlo RUL distribution from cycle index `start` (history up to start, inclusive).
 
     Degradation-linked HIs are predicted from SoH by per-HI linear fits on the cell's own
     history (local, private); usage HIs are held at their mean over the last 20 cycles.
-    One dropout mask per trajectory (fixed network sample) + aleatoric noise per step."""
+    One dropout mask per trajectory (fixed network sample) + aleatoric noise per step.
+    With `phys` (federated physics prior), each step is prior(SoH, throughput, T, C-rate)
+    plus the network's residual, which keeps long rollouts on a physically plausible path."""
+    from . import physics
     torch.manual_seed(seed)
     soh_hist, his = rec.soh[:start + 1], rec.his[:start + 1].copy()
     col_med = np.nanmedian(np.where(np.isfinite(his), his, np.nan), axis=0)
@@ -70,14 +73,24 @@ def rollout_rul(model, rec, start, L, norm_fn, eol, M=200, h_max=3000, block=1, 
     usage = his[-20:, USAGE_HI].mean(0)
     feat = np.concatenate([soh_hist[:, None], his], 1)[-L:]
     W = torch.tensor(np.repeat(feat[None], M, 0), dtype=torch.float32)
+    if phys is not None:
+        T_s, c_s, ah_s, _ = physics.cell_series(rec)
+        T_use, c_use = float(np.mean(T_s[max(0, start - 19):start + 1])), float(np.mean(c_s[max(0, start - 19):start + 1]))
+        ah = np.full(M, ah_s[start])
+        soh0 = float(np.median(rec.soh[:5]))
     model.eval()
     masks = model.lstm.sample_masks(M, W.shape[-1], W.device) if model.lstm.p > 0 else None
     rul = np.full(M, np.nan)
     alive = np.ones(M, bool)
+    s_prev = np.full(M, soh_hist[-1])
     with torch.no_grad():
         for h in range(1, h_max + 1):
             mu, logv, _ = model(norm_fn(W), mc=False, masks=masks)
             s = (mu + torch.randn(M) * (0.5 * logv).exp()).numpy()
+            if phys is not None:
+                dah = s_prev * rec.rated_ah * block
+                s = physics.prior_next(s_prev, ah, dah, T_use, c_use, phys, soh0) + s
+                ah = ah + dah
             hit = alive & (s <= eol)
             rul[hit] = h * block
             alive &= ~hit
@@ -89,14 +102,15 @@ def rollout_rul(model, rec, start, L, norm_fn, eol, M=200, h_max=3000, block=1, 
                 new[:, 1 + j] = coefs[j][0] * s + coefs[j][1]
             new[:, [1 + j for j in USAGE_HI]] = usage
             W = torch.cat([W[:, 1:], torch.tensor(new)[:, None]], 1)
+            s_prev = s
     rul[np.isnan(rul)] = h_max * block
     return rul
 
 
-# ------------------------------------------------------------------ Algorithm 2: calibrated risk shift planner
+# ------------------------------------------------------------------ Algorithm 3: calibrated risk shift planner
 def shift_planner(vehicles, horizon_shifts=3, p_crit=0.10, bay_slots=2, derate_soh=0.82,
                   second_life_soh=0.70, epi_quantile=0.95):
-    """Calibrated Risk Shift Planner (paper Algorithm 2).
+    """Calibrated Risk Shift Planner (paper Algorithm 3).
 
     vehicles: list of dicts with keys
         id, chemistry, rul_samples (cycles, conformally calibrated), soh_mu, soh_sigma (calibrated),
