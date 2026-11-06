@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "FedDT-BayesLSTM: reference implementation of a federated Bayesian digital twin for battery health prognosis in electric mining fleets"
+authors:
+  - family-names: Marisargunam
+    given-names: S.
+    orcid: "https://orcid.org/0009-0008-5157-2048"
+    affiliation: "Saveetha Engineering College, Chennai, India"
+  - family-names: Arul Dalton
+    given-names: G.
+    orcid: "https://orcid.org/0000-0002-5981-7176"
+    affiliation: "Saveetha Engineering College, Chennai, India"
+    email: aruldalton@saveetha.ac.in
+repository-code: "https://github.com/iitrky/feddt-bayeslstm"
+license: MIT
+version: 1.0.0
+date-released: 2026-11-06

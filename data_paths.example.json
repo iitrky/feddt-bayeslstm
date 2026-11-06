@@ -1,0 +1,6 @@
+{
+  "nasa": ["data/nasa/B0005.mat", "data/nasa/B0006.mat", "data/nasa/B0007.mat", "data/nasa/B0018.mat"],
+  "calce": ["data/calce/CS2_35", "data/calce/CS2_36", "data/calce/CS2_37", "data/calce/CS2_38"],
+  "oxford": "data/oxford/Oxford_Battery_Degradation_Dataset_1.mat",
+  "inhouse": {"csv": "data/lab/cycles.csv", "rated_ah": 2.5, "chemistry": "NMC", "eol": 0.8}
+}
