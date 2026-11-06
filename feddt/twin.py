@@ -4,7 +4,6 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import torch
 from scipy.stats import norm as gauss
 
 from .features import DEGRADATION_HI, USAGE_HI
@@ -60,6 +59,7 @@ def rollout_rul(model, rec, start, L, norm_fn, eol, M=200, h_max=3000, block=1, 
     One dropout mask per trajectory (fixed network sample) + aleatoric noise per step.
     With `phys` (federated physics prior), each step is prior(SoH, throughput, T, C-rate)
     plus the network's residual, which keeps long rollouts on a physically plausible path."""
+    import torch
     from . import physics
     torch.manual_seed(seed)
     soh_hist, his = rec.soh[:start + 1], rec.his[:start + 1].copy()

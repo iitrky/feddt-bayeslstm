@@ -64,45 +64,49 @@ def load_nasa(path_mat: str, rated_ah: float = 2.0, chemistry: str = "NASA-18650
 
 # ---------------------------------------------------------------- CALCE CS2
 def load_calce_cs2(cell_dir: str, rated_ah: float = 1.1, chemistry: str = "LCO", eol: float = 0.80) -> CellRecord:
-    files = sorted(glob.glob(os.path.join(cell_dir, "*.xls*")))
+    """CALCE CS2 cell from its original Arbin .xlsx files.
+    Files are ordered by their first Date_Time stamp; Arbin capacity counters accumulate across cycles,
+    so per-cycle capacity is max - min of Discharge_Capacity within the cycle."""
+    files = glob.glob(os.path.join(cell_dir, "*.xls*"))
     if not files:
         raise FileNotFoundError(f"no xlsx files in {cell_dir}")
-    frames, offset = [], 0
+    sheets = []
     for fp in files:
         book = pd.read_excel(fp, sheet_name=None)
         for sh, df in book.items():
-            if not sh.lower().startswith("channel"):
-                continue
-            df = df.rename(columns=lambda s: str(s).strip())
-            df["cyc"] = df["Cycle_Index"].astype(int) + offset
-            frames.append(df)
-        if frames:
-            offset = int(frames[-1]["cyc"].max()) + 1
-    df = pd.concat(frames, ignore_index=True)
+            if sh.lower().startswith("channel") and len(df):
+                df = df.rename(columns=lambda c: str(c).strip())
+                sheets.append((pd.to_datetime(df["Date_Time"].iloc[0]), df))
+    sheets.sort(key=lambda x: x[0])
     caps, his = [], []
-    for _, g in df.groupby("cyc"):
-        t = g["Test_Time(s)"].to_numpy(float)
-        i = g["Current(A)"].to_numpy(float)
-        v = g["Voltage(V)"].to_numpy(float)
-        ch, dc = i > 1e-3, i < -1e-3
-        if dc.sum() < 10 or ch.sum() < 10:
-            continue
-        charge = {"t": t[ch], "v": v[ch], "i": i[ch]}
-        dis = {"t": t[dc], "v": v[dc], "i": i[dc]}
-        cap = float(g["Discharge_Capacity(Ah)"].max())
-        if "Internal_Resistance(Ohm)" in g:
-            r = g["Internal_Resistance(Ohm)"].replace(0, np.nan).median()
-        else:
-            r = np.nan
-        f = extract_cycle_features(charge, dis, rated_ah)
-        if np.isfinite(r):
-            f[6] = r
-        caps.append(cap)
-        his.append(f)
+    for _, df in sheets:
+        for _, g in df.groupby("Cycle_Index", sort=True):
+            t = g["Test_Time(s)"].to_numpy(float)
+            i = g["Current(A)"].to_numpy(float)
+            v = g["Voltage(V)"].to_numpy(float)
+            ch, dc = i > 1e-3, i < -1e-3
+            if dc.sum() < 10 or ch.sum() < 10:
+                continue
+            dq = g["Discharge_Capacity(Ah)"].to_numpy(float)
+            cap = float(dq.max() - dq.min())
+            charge = {"t": t[ch], "v": v[ch], "i": i[ch]}
+            dis = {"t": t[dc], "v": v[dc], "i": i[dc]}
+            f = extract_cycle_features(charge, dis, rated_ah)
+            if "Internal_Resistance(Ohm)" in g:
+                r = g["Internal_Resistance(Ohm)"].replace(0, np.nan).median()
+                if np.isfinite(r):
+                    f[6] = r
+            caps.append(cap)
+            his.append(f)
     caps = np.asarray(caps)
     cid = os.path.basename(os.path.normpath(cell_dir))
-    return CellRecord(cid, "CALCE", chemistry, rated_ah, eol, np.arange(len(caps)), caps / rated_ah, np.vstack(his),
-                      meta={"ambient_c": 25.0}).clean()
+    rec = CellRecord(cid, "CALCE", chemistry, rated_ah, eol, np.arange(len(caps)), caps / rated_ah, np.vstack(his),
+                     meta={"ambient_c": 25.0})
+    # drop partial cycles (capacity far below the local median), a known artefact of file boundaries
+    med = pd.Series(rec.soh).rolling(9, center=True, min_periods=1).median().to_numpy()
+    keep = np.abs(rec.soh - med) < 0.1
+    rec.cycles, rec.soh, rec.his = np.arange(int(keep.sum())), rec.soh[keep], rec.his[keep]
+    return rec.clean()
 
 
 # ---------------------------------------------------------------- Oxford

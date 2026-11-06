@@ -65,10 +65,29 @@ python make_tables.py --results results/ --target_rmse 2.0
 python figures/make_figures.py
 ```
 
+## NumPy backend (no PyTorch needed)
+
+`feddt_np/` is an equivalent NumPy implementation of the model and the federation (explicit
+back-propagation through time, verified by `tests/test_np_gradients.py`). The results in the paper's
+Tables 4-9 were produced with it:
+
+```bash
+python run_np.py --cells cells.pkl --scenario S1 --methods feddt fedavg_mc --rul --seeds 0 1 --rounds 30 --out results_np
+python run_np.py --cells cells.pkl --scenario S1 --methods fedavg fedprox scaffold scaffold_mc local central gpr --seeds 0 1 --rounds 30 --out results_np
+python run_np.py --cells cells.pkl --scenario S1 --ablations no_physics --seeds 0 1 --rounds 30 --out results_np
+python run_np.py --cells cells.pkl --scenario S2 --methods feddt fedavg_mc --ablations no_physics no_drift no_reliability --seeds 0 1 --rounds 30 --out results_np
+python run_np.py --cells cells.pkl --scenario S3 --late_chem NASA-18650 --methods feddt fedavg_mc --ablations no_drift shared_head --seeds 0 1 --rounds 30 --out results_np
+python aggregate_np.py results_np
+```
+
+`cells.pkl` is a pickled list of `CellRecord` objects built with the loaders in `feddt/data.py`
+(see `scripts/build_cells.py`).
+
 ## Tests
 
 ```bash
 python tests/test_nontorch.py    # features, windows, metrics, uplink bytes, physics prior, DW-FCC, shift planner (no PyTorch needed)
+python tests/test_np_gradients.py # finite-difference check of the NumPy back-propagation
 ```
 
 ## Repository layout

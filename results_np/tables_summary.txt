@@ -1,0 +1,68 @@
+## Table 4 (S1, RMSE / MAE in %, per dataset)
+local | 0.96 ± 0.30 / 0.63 ± 0.35 (n=8) | 1.06 ± 0.19 / 0.58 ± 0.10 (n=8)
+central | 0.84 ± 0.19 / 0.44 ± 0.11 (n=8) | 1.00 ± 0.22 / 0.49 ± 0.06 (n=8)
+gpr | 0.83 ± 0.19 / 0.46 ± 0.13 (n=8) | 0.97 ± 0.23 / 0.44 ± 0.04 (n=8)
+fedavg | 0.85 ± 0.19 / 0.48 ± 0.16 (n=8) | 0.99 ± 0.22 / 0.48 ± 0.06 (n=8)
+fedprox | 0.85 ± 0.17 / 0.47 ± 0.12 (n=8) | 0.99 ± 0.23 / 0.48 ± 0.06 (n=8)
+scaffold | 1.17 ± 0.24 / 0.92 ± 0.22 (n=8) | 1.26 ± 0.37 / 0.83 ± 0.25 (n=8)
+fedavg_mc | 0.83 ± 0.18 / 0.46 ± 0.12 (n=8) | 0.98 ± 0.23 / 0.45 ± 0.03 (n=8)
+scaffold_mc | 0.87 ± 0.17 / 0.53 ± 0.16 (n=8) | 1.02 ± 0.21 / 0.53 ± 0.09 (n=8)
+feddt | 0.96 ± 0.20 / 0.65 ± 0.24 (n=8) | 1.42 ± 0.65 / 1.05 ± 0.73 (n=8)
+
+## Table 5 (S1, both datasets, mean over cells)
+gpr gaussian | PICP 0.981 ± 0.010 | MPIW 4.46 ± 0.30 | NLL -3.22 ± 0.19 | CRPS 0.426 ± 0.056 | epi share nan ± nan (n=16)
+fedavg_mc gaussian | PICP 0.973 ± 0.015 | MPIW 4.22 ± 0.42 | NLL -3.22 ± 0.22 | CRPS 0.422 ± 0.051 | epi share 0.004 ± 0.002 (n=16)
+scaffold_mc gaussian | PICP 0.992 ± 0.006 | MPIW 8.74 ± 2.18 | NLL -2.81 ± 0.22 | CRPS 0.647 ± 0.116 | epi share 0.017 ± 0.008 (n=16)
+feddt gaussian | PICP 0.950 ± 0.094 | MPIW 5.49 ± 0.76 | NLL -2.89 ± 0.49 | CRPS 0.665 ± 0.366 | epi share 0.130 ± 0.101 (n=16)
+feddt split | PICP 0.984 ± 0.013 | MPIW 6.76 ± 1.77 | NLL -2.89 ± 0.49 | CRPS 0.665 ± 0.366 | epi share 0.130 ± 0.101 (n=16)
+feddt dwfcc | PICP 0.984 ± 0.011 | MPIW 7.27 ± 2.81 | NLL -2.89 ± 0.49 | CRPS 0.665 ± 0.366 | epi share 0.130 ± 0.101 (n=16)
+DW-FCC eta 50.00 ± 0.00 ESS frac 0.970 ± 0.030 q split vs dwfcc 2.399 ± 0.384 2.570 ± 0.783
+
+## Table 6 (S1 RUL, pooled over cells, by start)
+fedavg_mc 0.3 RMSE 524.3 | MAE 351.6 | PICP 0.500 | alpha-lambda 0.071 (n=14)
+fedavg_mc 0.5 RMSE 522.7 | MAE 302.5 | PICP 0.571 | alpha-lambda 0.000 (n=14)
+fedavg_mc 0.7 RMSE 532.2 | MAE 249.9 | PICP 0.786 | alpha-lambda 0.214 (n=14)
+    fedavg_mc NASA RMSE 592.9 MAE 287.2 rel 5.131
+    fedavg_mc CALCE RMSE 470.4 MAE 311.9 rel 1.131
+feddt 0.3 RMSE 154.2 | MAE 118.2 | PICP 0.857 | alpha-lambda 0.143 (n=14)
+feddt 0.5 RMSE 88.1 | MAE 66.1 | PICP 1.000 | alpha-lambda 0.286 (n=14)
+feddt 0.7 RMSE 42.1 | MAE 27.8 | PICP 0.857 | alpha-lambda 0.571 (n=14)
+    feddt NASA RMSE 16.7 MAE 14.1 rel 0.257
+    feddt CALCE RMSE 138.7 MAE 113.2 rel 0.352
+
+## Table 7 (Algorithm 3 decision quality, horizon 100 cycles, p_crit 0.10)
+fedavg_mc {'missed_failure_rate': 0.278, 'false_withdrawal_rate': 0.792} positives 18 of 42
+feddt {'missed_failure_rate': 0.0, 'false_withdrawal_rate': 0.167} positives 18 of 42
+
+## Table 8 (rounds and cumulative uplink to target RMSE)
+final-round mean test RMSE per method: {'fedavg': 0.92, 'fedavg_mc': 0.906, 'feddt': 1.207, 'feddt-no_physics': 1.114, 'fedprox': 0.919, 'scaffold': 1.215, 'scaffold_mc': 0.956}
+target 1.5
+   fedavg rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   fedprox rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   scaffold rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   fedavg_mc rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   feddt rounds 2.9 | MB 0.148 | reached in 8/8 runs
+target 2.0
+   fedavg rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   fedprox rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   scaffold rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   fedavg_mc rounds 1.0 | MB 0.663 | reached in 8/8 runs
+   feddt rounds 1.0 | MB 0.051 | reached in 8/8 runs
+
+## Table 9 (RMSE %, PICP) by scenario
+FedAvg + MC dropout | 0.91, 0.973 (n=16) | 0.92, 0.974 (n=16) | 0.91, 0.973 (n=16)
+FedDT full (DW-FCC) | 1.19, 0.984 (n=16) | 1.06, 0.982 (n=16) | 1.45, 0.986 (n=16)
+without physics prior | 1.10, 0.985 (n=16) | 1.09, 0.985 (n=16) | –
+without drift term | – | 1.06, 0.987 (n=16) | 1.15, 0.988 (n=16)
+without reliability | – | 1.06, 0.988 (n=16) | –
+shared head | – | – | 1.23, 0.989 (n=16)
+split conformal instead of DW-FCC | 1.19, 0.984 (n=16) | 1.06, 0.979 (n=16) | 1.45, 0.981 (n=16)
+without conformal step | 1.19, 0.950 (n=16) | 1.06, 0.977 (n=16) | 1.45, 0.957 (n=16)
+
+physics parameters (first FedDT run per fold):
+S1_feddt_f0_s0.json {"NASA-18650": {"logB": 5.6457, "Ea": 31700.0, "Ea_c": 370.3, "z": 1.0679, "Ea_estimated": false, "logB_mu": 5.6557, "logB_sd": 0.2102}, "LCO": {"logB": -3.1285, "Ea": 31700.0, "Ea_c": 370.3, "z": 2.1965, "Ea_estimated": false, "logB_mu": -3.1178, "logB_sd": 0.1812}}
+S1_feddt_f1_s0.json {"NASA-18650": {"logB": 4.2792, "Ea": 31700.0, "Ea_c": 370.3, "z": 1.3012, "Ea_estimated": false, "logB_mu": 4.3108, "logB_sd": 0.1961}, "LCO": {"logB": -3.7403, "Ea": 31700.0, "Ea_c": 370.3, "z": 2.283, "Ea_estimated": false, "logB_mu": -3.7414, "logB_sd": 0.1077}}
+S1_feddt_f2_s0.json {"NASA-18650": {"logB": 5.2171, "Ea": 31700.0, "Ea_c": 370.3, "z": 1.1612, "Ea_estimated": false, "logB_mu": 5.2199, "logB_sd": 0.1212}, "LCO": {"logB": -3.8334, "Ea": 31700.0, "Ea_c": 370.3, "z": 2.3129, "Ea_estimated": false, "logB_mu": -3.8263, "logB_sd": 0.1815}}
+S1_feddt_f3_s0.json {"NASA-18650": {"logB": 4.7244, "Ea": 31700.0, "Ea_c": 370.3, "z": 1.2267, "Ea_estimated": false, "logB_mu": 4.7167, "logB_sd": 0.1956}, "LCO": {"logB": -3.5925, "Ea": 31700.0, "Ea_c": 370.3, "z": 2.2825, "Ea_estimated": false, "logB_mu": -3.592, "logB_sd": 0.1341}}
+
+total compute (s): 3705 runs: 152

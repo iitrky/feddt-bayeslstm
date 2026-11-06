@@ -44,7 +44,7 @@ def fit_local(rec, ea=DEFAULT_EA, ea_c=DEFAULT_EA_C, upto=None):
     if n < 5:
         return {**base, "logk": np.log(1e-4), "z": DEFAULT_Z, "soh0": float(np.median(y))}
     best = None
-    for z in np.linspace(0.3, 1.2, 91):
+    for z in np.linspace(0.3, 2.5, 221):
         A = np.vstack([np.ones(n), -np.power(x, z)]).T
         coef, *_ = np.linalg.lstsq(A, y, rcond=None)
         sse = float(np.sum((A @ coef - y) ** 2))
@@ -83,7 +83,7 @@ def prior_next(soh_n, ah_n, dah, T_K, c, params, soh0):
     """Physics prior for SoH_{n+1} given SoH_n (increment form, anchored to the observation)."""
     z = params["z"]
     k = k_rate(params, T_K, c)
-    inc = k * (np.power(ah_n + dah, z) - np.power(np.maximum(ah_n, 1e-9), z))
+    inc = k * (np.power(np.maximum(ah_n + dah, 1e-9), z) - np.power(np.maximum(ah_n, 1e-9), z))
     return soh_n - soh0 * inc
 
 
@@ -95,3 +95,68 @@ def prior_series(rec, params, L):
     for n in range(L - 1, len(rec.soh) - 1):
         out.append(prior_next(rec.soh[n], ah[n], dah[n], T[n], c[n], params, soh0))
     return np.asarray(out, np.float32)
+
+
+def fit_logB_fixed_z(rec, z, ea=DEFAULT_EA, ea_c=DEFAULT_EA_C, upto=None):
+    """Second federated pass: refit a vehicle's fade rate with the pooled exponent z and convert it to the
+    temperature-free log B (one scalar per vehicle)."""
+    T, c, ah, _ = cell_series(rec)
+    n = len(rec.soh) if upto is None else min(max(int(upto), 3), len(rec.soh))
+    A = np.vstack([np.ones(n), -np.power(np.maximum(ah[:n], 1e-9), z)]).T
+    (s0, s0k), *_ = np.linalg.lstsq(A, rec.soh[:n], rcond=None)
+    if s0 <= 0 or s0k <= 0:
+        return None
+    logk = np.log(s0k / s0)
+    return float(logk + (ea - ea_c * np.mean(c[:n])) / (R_GAS * np.mean(T[:n])))
+
+
+def fade_path_samples(soh_hist, ah_hist, params, rated_ah, T_hist, T_future, c_hist, c_future, M, level_mu, level_sd,
+                      h_max, eol, block=1, rng=None):
+    """Physics-guided RUL (paper Sect. 4.6).
+    Fade rate: fleet prior on log B (mean logB_mu, sd logB_sd from the federation) combined by precision with
+    the vehicle's own least-squares estimate on its history (delta-method variance), i.e. an empirical-Bayes
+    posterior; early in life the fleet dominates, later the vehicle's own data. The path starts at the
+    Bayesian LSTM posterior level, is scaled to the planned temperature and C-rate by the Arrhenius factor,
+    and is propagated to the end-of-life threshold; measurement noise is not compounded."""
+    rng = rng or np.random.default_rng(0)
+    z = params["z"]
+    soh0 = float(np.median(soh_hist[:5]))
+    to_logk = lambda logB, T, c: logB - (params["Ea"] - params["Ea_c"] * c) / (R_GAS * T)
+    prior_mu = to_logk(params.get("logB_mu", params["logB"]), T_hist, c_hist)
+    prior_sd = max(params.get("logB_sd", 1.0), 0.05)
+    A = np.vstack([np.ones_like(ah_hist), -np.power(np.maximum(ah_hist, 1e-9), z)]).T
+    coef, *_ = np.linalg.lstsq(A, soh_hist, rcond=None)
+    resid = soh_hist - A @ coef
+    s2 = float(resid @ resid) / max(len(soh_hist) - 2, 1)
+    # AR(1) correction: autocorrelated residuals (curve misfit, regeneration) carry less information
+    rho = float(np.corrcoef(resid[:-1], resid[1:])[0, 1]) if len(resid) > 3 and np.std(resid) > 0 else 0.0
+    rho = min(max(rho, 0.0), 0.99)
+    inflate = (1 + rho) / (1 - rho)
+    cov = s2 * inflate * np.linalg.pinv(A.T @ A)
+    if coef[0] > 0 and coef[1] > 0:
+        loc = float(np.log(coef[1] / coef[0]))
+        var_loc = cov[1, 1] / coef[1] ** 2 + cov[0, 0] / coef[0] ** 2 - 2 * cov[0, 1] / (coef[0] * coef[1])
+        var_loc = max(float(var_loc), 1e-6)
+        prec = 1 / prior_sd ** 2 + 1 / var_loc
+        post_mu = (prior_mu / prior_sd ** 2 + loc / var_loc) / prec
+        post_sd = np.sqrt(1 / prec)
+    else:
+        post_mu, post_sd = prior_mu, prior_sd
+    logk = rng.normal(post_mu, post_sd, size=M)
+    k = np.exp(logk) * np.exp((params["Ea"] / R_GAS) * (1.0 / T_hist - 1.0 / T_future)
+                              + params["Ea_c"] * (c_future / T_future - c_hist / T_hist) / R_GAS)
+    ah0 = float(ah_hist[-1])
+    level = rng.normal(level_mu, max(level_sd, 1e-6), size=M)
+    rul = np.full(M, h_max * block, float)
+    ah = np.full(M, ah0)
+    s = level.copy()
+    alive = np.ones(M, bool)
+    for h in range(1, h_max + 1):
+        ah = ah + np.maximum(s, 0.05) * rated_ah * block
+        s = level - soh0 * k * (ah ** z - ah0 ** z)
+        hit = alive & (s <= eol)
+        rul[hit] = h * block
+        alive &= ~hit
+        if not alive.any():
+            break
+    return rul
